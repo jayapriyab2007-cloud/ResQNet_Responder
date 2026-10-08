@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ResQNet Responder App
 
 Emergency Response & Rescue Coordination Command Center.
@@ -76,3 +77,6 @@ npm run build
 - Real-Time Coordination: Socket.IO
 - Mapping & Geolocation: Leaflet & OpenStreetMap
 - Mobile Packaging: Capacitor for Android
+=======
+# ResQNet_Responder
+>>>>>>> 7ae2e6e89a7b1d8bb46a21cd78a6d1ca9c3e9067
