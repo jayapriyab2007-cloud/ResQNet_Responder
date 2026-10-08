@@ -23,3 +23,5 @@ pnpm-debug.log*
 .idea/
 .DS_Store
 Thumbs.db
+# Local demo/cleanup script
+server/clean_demo_data.js
