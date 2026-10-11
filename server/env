@@ -1,0 +1,3 @@
+MONGODB_URI=mongodb+srv://harshithals2024csd_db_user:eKNMVN42427qExqd@resqnet.u0vfm2d.mongodb.net/?appName=ResQNet
+PORT=5000
+CLIENT_URL=http://localhost:5173
