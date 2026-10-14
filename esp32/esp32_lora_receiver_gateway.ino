@@ -22,6 +22,7 @@
 #include <LoRa.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 
 // -----------------------------------------------------------------------------
@@ -34,8 +35,7 @@ const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";    // Change to your Wi-Fi Pas
 // 2. ResQNet Server Configuration & Authentication
 // -----------------------------------------------------------------------------
 // Replace with the IP address of your PC running the ResQNet backend (e.g. 192.168.1.X or 172.16.X.X)
-const char* SERVER_URL = "http://192.168.1.100:5000/api/lora/message";
-
+const char* SERVER_URL = "https://resqnet-backend-uzne.onrender.com/api/lora/message";
 // Pre-shared Gateway API key matching GATEWAY_API_KEY in server/.env
 const char* GATEWAY_API_KEY = "63d2305c367ffc3113ff312f143500b164ce54656705c922a29cd4726ae54120";
 
@@ -95,48 +95,113 @@ void forwardToServer(String jsonPayload) {
   const int MAX_RETRIES = 3;
   bool acknowledged = false;
 
-  for (int attempt = 1; attempt <= MAX_RETRIES && !acknowledged; attempt++) {
+  for (int attempt = 1;
+       attempt <= MAX_RETRIES && !acknowledged;
+       attempt++) {
+
+    // 1. Ensure Wi-Fi is connected
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.printf("[HTTP] Wi-Fi reconnecting (attempt %d/%d)...\n", attempt, MAX_RETRIES);
+      Serial.printf(
+        "[WiFi] Reconnecting (attempt %d/%d)...\n",
+        attempt,
+        MAX_RETRIES
+      );
+
       WiFi.reconnect();
+
       int timeout = 0;
-      while (WiFi.status() != WL_CONNECTED && timeout < 15) {
+
+      while (WiFi.status() != WL_CONNECTED && timeout < 25) {
         delay(200);
         timeout++;
       }
     }
 
-    if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient http;
-      http.begin(SERVER_URL);
-      http.addHeader("Content-Type", "application/json");
-      http.addHeader("X-Gateway-Key", GATEWAY_API_KEY);
-      http.setTimeout(5000);
-
-      Serial.printf("[HTTP] Dispatching packet to ResQNet backend (attempt %d/%d)...\n", attempt, MAX_RETRIES);
-      int httpResponseCode = http.POST(jsonPayload);
-
-      if (httpResponseCode == 200 || httpResponseCode == 201) {
-        String response = http.getString();
-        Serial.printf("[HTTP] Success! Server Acknowledged (%d): %s\n", httpResponseCode, response.c_str());
-        acknowledged = true;
-      } else if (httpResponseCode > 0) {
-        Serial.printf("[HTTP] Server Error Response (%d): %s\n", httpResponseCode, http.getString().c_str());
-      } else {
-        Serial.printf("[HTTP] Network Transport Error: %s\n", http.errorToString(httpResponseCode).c_str());
-      }
-      http.end();
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("[WiFi] Connection unavailable.");
     } else {
-      Serial.println("[HTTP] Wi-Fi offline. Retrying...");
+      // 2. Establish a certificate-validated HTTPS connection
+      WiFiClientSecure secureClient;
+      secureClient.setCACert(rootCACertificate);
+
+      HTTPClient http;
+      http.setTimeout(10000);
+
+      if (!http.begin(secureClient, SERVER_URL)) {
+        Serial.println("[HTTPS] Failed to initialize connection.");
+      } else {
+        // 3. Set request headers
+        http.addHeader("Content-Type", "application/json");
+        http.addHeader("X-Gateway-Key", GATEWAY_API_KEY);
+
+        Serial.printf(
+          "[HTTPS] Sending emergency packet (attempt %d/%d)...\n",
+          attempt,
+          MAX_RETRIES
+        );
+
+        // 4. Send the emergency payload
+        int httpResponseCode = http.POST(jsonPayload);
+
+        // 5. Process the backend acknowledgement
+        if (httpResponseCode == 200 ||
+            httpResponseCode == 201) {
+
+          String response = http.getString();
+
+          Serial.printf(
+            "[HTTPS] Backend responded with HTTP %d.\n",
+            httpResponseCode
+          );
+
+          Serial.print("[HTTPS] Response: ");
+          Serial.println(response);
+
+          acknowledged = true;
+
+        } else if (httpResponseCode > 0) {
+          Serial.printf(
+            "[HTTPS] HTTP error %d: %s\n",
+            httpResponseCode,
+            http.getString().c_str()
+          );
+
+        } else {
+          Serial.printf(
+            "[HTTPS] Transport error: %s\n",
+            http.errorToString(httpResponseCode).c_str()
+          );
+        }
+
+        http.end();
+      }
     }
 
+    // 6. Bounded exponential-style backoff
     if (!acknowledged && attempt < MAX_RETRIES) {
-      delay(1000 * attempt); // Bounded backoff
+      unsigned long waitMs = 1000UL * attempt;
+
+      Serial.printf(
+        "[HTTPS] Retrying in %lu ms...\n",
+        waitMs
+      );
+
+      delay(waitMs);
     }
   }
 
-  if (!acknowledged) {
-    Serial.println("[HTTP] Bounded retries exhausted. Packet preserved in USB Serial stream.");
+  // 7. Report final delivery status
+  if (acknowledged) {
+    Serial.println(
+      "[HTTPS] Emergency packet acknowledged by ResQNet backend."
+    );
+  } else {
+    Serial.println(
+      "[HTTPS] Delivery failed after all retries."
+    );
+    Serial.println(
+      "[HTTPS] Preserve the packet for retry or manual recovery."
+    );
   }
 }
 
