@@ -317,7 +317,7 @@ router.patch('/availability', async (req, res) => {
     const user = await User.findByIdAndUpdate(
       req.user.id,
       { availability },
-      { new: true }
+      { returnDocument: 'after' }
     ).select('-password');
 
     const responderId = req.user.responder_id || req.user.id;

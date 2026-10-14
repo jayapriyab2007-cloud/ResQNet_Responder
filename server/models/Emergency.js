@@ -151,4 +151,14 @@ const emergencySchema = new mongoose.Schema({
   }
 });
 
+// Automatically update updated_at on every save
+emergencySchema.pre('save', function () {
+  this.updated_at = new Date();
+});
+
+// Compound index for common admin queries (filter by status, sorted by created_at)
+emergencySchema.index({ status: 1, created_at: -1 });
+// Compound index for responder assignment lookups
+emergencySchema.index({ 'assigned_responders.responder_id': 1, status: 1 });
+
 module.exports = mongoose.model('Emergency', emergencySchema);

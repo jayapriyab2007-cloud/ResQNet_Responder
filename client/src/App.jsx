@@ -8,7 +8,7 @@ import EmergencyFilters from './components/EmergencyFilters';
 
 import { api, API_BASE_URL } from './services/api';
 import { initSocket, getSocket, disconnectSocket } from './services/socket';
-import { normalizeEmergency, normalizeResponder } from './utils/normalizer';
+import { normalizeEmergency, normalizeResponder, normalizeHistoryItem } from './utils/normalizer';
 import { queueOfflineAction, getQueuedActions, clearQueueItem } from './services/offline';
 
 // ==========================================================
@@ -290,7 +290,8 @@ function App() {
       },
       (err) => {
         console.warn('Geolocation warning:', err.message);
-        setGpsStatus('GPS Unavailable');
+        setGpsStatus(err.code === 1 ? 'GPS Permission Denied' : 'GPS Unavailable');
+        setGpsCoords(null);
       },
       { timeout: 10000, enableHighAccuracy: true }
     );
@@ -386,6 +387,9 @@ function App() {
     requestLocation();
 
     let watchId = null;
+    let lastLocationSent = Date.now(); // Initial position is already transmitted by requestLocation()
+    const LOCATION_SEND_INTERVAL_MS = 30000; // Throttle: send continuous updates at most once per 30 seconds
+
     if (navigator.geolocation && currentRole === 'responder') {
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
@@ -394,14 +398,28 @@ function App() {
             lng: pos.coords.longitude,
             accuracy: Math.round(pos.coords.accuracy)
           });
-          api.responder.updateLocation({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: Math.round(pos.coords.accuracy),
-            timestamp: new Date().toISOString()
-          }).catch(() => {});
+          setGpsStatus('GPS Active');
+          // Throttle API calls — don't send on every GPS tick
+          const now = Date.now();
+          if (now - lastLocationSent >= LOCATION_SEND_INTERVAL_MS) {
+            lastLocationSent = now;
+            api.responder.updateLocation({
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracy: Math.round(pos.coords.accuracy),
+              timestamp: new Date().toISOString()
+            }).catch(() => {});
+          }
         },
-        (err) => console.warn('GPS watch warning:', err.message),
+        (err) => {
+          console.warn('GPS watch warning:', err.message);
+          if (err.code === 1) {
+            setGpsStatus('GPS Permission Denied');
+            setGpsCoords(null);
+          } else {
+            setGpsStatus('GPS Position Unavailable');
+          }
+        },
         { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
       );
     }
@@ -592,8 +610,11 @@ function App() {
         return true;
       });
 
-      // Plot Emergency Markers
+      // Plot Emergency Markers (only for incidents with valid coordinates)
       visibleEmergencies.forEach(em => {
+        // Skip emergencies without valid coordinates (e.g. LoRa nodes without GPS)
+        if (!em.location_available || em.lat == null || em.lng == null) return;
+
         const isSelected = em.id === mapSelectedEmergencyId;
         const priorityClass = em.priority.startsWith('P1') ? 'marker-p1' : em.priority.startsWith('P2') ? 'marker-p2' : 'marker-p3';
         
@@ -626,12 +647,16 @@ function App() {
         });
       });
 
-      // Plot Responder Markers (if enabled)
+      // Plot Responder Markers (if enabled, only for responders with valid coordinates)
       if (mapShowResponders) {
         responders.forEach(resp => {
+          // Skip responders without a known location
+          if (!resp.location_available || resp.lat == null || resp.lng == null) return;
+
           const isMe = currentRole === 'responder' && resp.name === responderProfile.name;
           const isSelected = resp.id === mapSelectedResponderId;
           const statusClass = resp.availability === 'Available' ? 'resp-avail' : resp.availability === 'Busy' ? 'resp-busy' : 'resp-offline';
+          const staleNote = resp.location_stale ? ' ⚠️ stale' : '';
 
           const respIcon = L.divIcon({
             className: 'custom-leaflet-marker',
@@ -648,7 +673,7 @@ function App() {
           const rMarker = L.marker([resp.lat, resp.lng], { icon: respIcon }).addTo(markersLayerRef.current);
           rMarker.bindPopup(`
             <div class="map-popup-card">
-              <div class="popup-title">📍 ${resp.name} ${isMe ? '(YOU)' : ''}</div>
+              <div class="popup-title">📍 ${resp.name} ${isMe ? '(YOU)' : ''}${staleNote}</div>
               <div class="popup-meta">${resp.role} • ${resp.team}</div>
               <div class="popup-loc">Status: ${resp.availability}</div>
               <div class="popup-status">Link: ${resp.connection}</div>

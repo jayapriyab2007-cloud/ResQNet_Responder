@@ -1,4 +1,4 @@
-/*
+﻿/*
   =============================================================================
   ResQNet - ESP32 LoRa Receiver Gateway to Web Application
   =============================================================================
@@ -8,6 +8,7 @@
     When a packet is received, it connects to local Wi-Fi and posts the victim's
     rescue message and telemetry directly to the ResQNet Command Center backend:
       POST http://<SERVER_IP>:5000/api/lora/message
+    Secured with the pre-shared X-Gateway-Key header matching the backend server.
     It also outputs clean JSON to the Serial monitor (115200 baud) for direct USB COM bridge!
 
   Required Arduino IDE Libraries:
@@ -30,10 +31,16 @@ const char* WIFI_SSID     = "YOUR_WIFI_NAME";        // Change to your Wi-Fi SSI
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";    // Change to your Wi-Fi Password
 
 // -----------------------------------------------------------------------------
-// 2. ResQNet Server Configuration
+// 2. ResQNet Server Configuration & Authentication
 // -----------------------------------------------------------------------------
-// Replace with the IP address of your PC running the ResQNet backend (e.g. 172.16.10.217 or 192.168.1.X)
-const char* SERVER_URL = "http://172.16.10.217:5000/api/lora/message";
+// Replace with the IP address of your PC running the ResQNet backend (e.g. 192.168.1.X or 172.16.X.X)
+const char* SERVER_URL = "http://192.168.1.100:5000/api/lora/message";
+
+// Pre-shared Gateway API key matching GATEWAY_API_KEY in server/.env
+const char* GATEWAY_API_KEY = "63d2305c367ffc3113ff312f143500b164ce54656705c922a29cd4726ae54120";
+
+// Gateway Identifier
+const char* GATEWAY_ID = "ESP32_COMMAND_GATEWAY_01";
 
 // -----------------------------------------------------------------------------
 // 3. LoRa Radio Pinout Configuration
@@ -49,14 +56,11 @@ const char* SERVER_URL = "http://172.16.10.217:5000/api/lora/message";
 #define LORA_RST   14
 #define LORA_DIO0  26
 
-// Frequency: 433E6 (Asia/Europe 433 MHz), 868E6 (Europe 868 MHz), 915E6 (US 915 MHz)
+// Frequency: 433E6 (Asia/India 433 MHz ISM band), 868E6 (EU), 915E6 (US)
 #define LORA_BAND  433E6
 
 // Indicator LED pin (blinks when emergency packet is received)
 #define LED_PIN    2
-
-// Gateway Identifier
-const char* GATEWAY_ID = "ESP32_COMMAND_GATEWAY_01";
 
 // -----------------------------------------------------------------------------
 // Helper: Connect to Wi-Fi
@@ -80,7 +84,59 @@ void connectWiFi() {
     Serial.print("[WiFi] ESP32 Gateway IP: ");
     Serial.println(WiFi.localIP());
   } else {
-    Serial.println("\n[WiFi] Warning: Wi-Fi connection timed out. Packets will still be printed to Serial.");
+    Serial.println("\n[WiFi] Warning: Wi-Fi connection timed out. Packets will still be output via USB Serial.");
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Forward Packet to ResQNet Web Server (Bounded Retries & Ack Verification)
+// -----------------------------------------------------------------------------
+void forwardToServer(String jsonPayload) {
+  const int MAX_RETRIES = 3;
+  bool acknowledged = false;
+
+  for (int attempt = 1; attempt <= MAX_RETRIES && !acknowledged; attempt++) {
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.printf("[HTTP] Wi-Fi reconnecting (attempt %d/%d)...\n", attempt, MAX_RETRIES);
+      WiFi.reconnect();
+      int timeout = 0;
+      while (WiFi.status() != WL_CONNECTED && timeout < 15) {
+        delay(200);
+        timeout++;
+      }
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      http.begin(SERVER_URL);
+      http.addHeader("Content-Type", "application/json");
+      http.addHeader("X-Gateway-Key", GATEWAY_API_KEY);
+      http.setTimeout(5000);
+
+      Serial.printf("[HTTP] Dispatching packet to ResQNet backend (attempt %d/%d)...\n", attempt, MAX_RETRIES);
+      int httpResponseCode = http.POST(jsonPayload);
+
+      if (httpResponseCode == 200 || httpResponseCode == 201) {
+        String response = http.getString();
+        Serial.printf("[HTTP] Success! Server Acknowledged (%d): %s\n", httpResponseCode, response.c_str());
+        acknowledged = true;
+      } else if (httpResponseCode > 0) {
+        Serial.printf("[HTTP] Server Error Response (%d): %s\n", httpResponseCode, http.getString().c_str());
+      } else {
+        Serial.printf("[HTTP] Network Transport Error: %s\n", http.errorToString(httpResponseCode).c_str());
+      }
+      http.end();
+    } else {
+      Serial.println("[HTTP] Wi-Fi offline. Retrying...");
+    }
+
+    if (!acknowledged && attempt < MAX_RETRIES) {
+      delay(1000 * attempt); // Bounded backoff
+    }
+  }
+
+  if (!acknowledged) {
+    Serial.println("[HTTP] Bounded retries exhausted. Packet preserved in USB Serial stream.");
   }
 }
 
@@ -98,7 +154,7 @@ void setup() {
   Serial.println("  ResQNet ESP32 LoRa Emergency Receiver Gateway");
   Serial.println("==============================================");
 
-  // Connect to Wi-Fi
+  // Connect to local Wi-Fi network
   connectWiFi();
 
   // Setup SPI and LoRa module
@@ -107,7 +163,7 @@ void setup() {
 
   Serial.print("[LoRa] Initializing radio on frequency ");
   Serial.print(LORA_BAND / 1E6);
-  Serial.println(" MHz...");
+  Serial.println(" MHz (India 433 MHz ISM)...");
 
   if (!LoRa.begin(LORA_BAND)) {
     Serial.println("[LoRa] ERROR: LoRa transceiver init failed! Check wiring & pinout.");
@@ -120,48 +176,13 @@ void setup() {
   }
 
   // Set LoRa parameters (Spreading Factor, Bandwidth, Sync Word)
-  LoRa.setSpreadingFactor(10);           // SF7 to SF12 (SF10 gives long range)
+  LoRa.setSpreadingFactor(10);           // SF10 gives long range in dense environments
   LoRa.setSignalBandwidth(125E3);        // 125 kHz
-  LoRa.setCodingRate4(5);                // 4/5
+  LoRa.setCodingRate4(5);                // 4/5 forward error correction
   LoRa.setSyncWord(0x12);                // Private disaster network sync word
   LoRa.enableCrc();
 
   Serial.println("[LoRa] Receiver ready! Listening for victim rescue messages...\n");
-}
-
-// -----------------------------------------------------------------------------
-// Forward Packet to ResQNet Web Server
-// -----------------------------------------------------------------------------
-void forwardToServer(String jsonPayload) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[HTTP] Reconnecting Wi-Fi before transmission...");
-    WiFi.reconnect();
-    int timeout = 0;
-    while (WiFi.status() != WL_CONNECTED && timeout < 10) {
-      delay(300);
-      timeout++;
-    }
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(SERVER_URL);
-    http.addHeader("Content-Type", "application/json");
-
-    Serial.println("[HTTP] Dispatching packet to ResQNet backend...");
-    int httpResponseCode = http.POST(jsonPayload);
-
-    if (httpResponseCode > 0) {
-      String response = http.getString();
-      Serial.printf("[HTTP] Success! Server Response Code: %d\n", httpResponseCode);
-      Serial.println("[HTTP] Server Response: " + response);
-    } else {
-      Serial.printf("[HTTP] Error sending POST: %s\n", http.errorToString(httpResponseCode).c_str());
-    }
-    http.end();
-  } else {
-    Serial.println("[HTTP] Error: Wi-Fi disconnected. Unable to send HTTP request.");
-  }
 }
 
 // -----------------------------------------------------------------------------
@@ -171,7 +192,6 @@ void loop() {
   int packetSize = LoRa.parsePacket();
 
   if (packetSize) {
-    // Visual flash
     digitalWrite(LED_PIN, HIGH);
 
     String incomingMessage = "";
@@ -194,15 +214,45 @@ void loop() {
     // Check if incoming payload is already valid JSON
     DeserializationError error = deserializeJson(doc, incomingMessage);
     if (error) {
-      // If plain text string, parse format: "SENDER;TYPE;SEV;LAT;LON;PEOPLE;MESSAGE"
-      // Or default fallback
-      doc["sender_id"] = "LORA_VICTIM_NODE_01";
-      doc["emergency_type"] = "Flood";
-      doc["severity"] = "Critical";
-      doc["message"] = incomingMessage;
-      doc["latitude"] = 12.8342;
-      doc["longitude"] = 79.7036;
-      doc["people_affected"] = 2;
+      // Parse delimiter-separated format: "SENDER;TYPE;SEV;LAT;LON;PEOPLE;MESSAGE;ID;HOPS"
+      int partIndex = 0;
+      String parts[9];
+      int startIdx = 0;
+      for (int i = 0; i < incomingMessage.length(); i++) {
+        char c = incomingMessage.charAt(i);
+        if (c == ';' || c == '|' || c == ',') {
+          if (partIndex < 9) {
+            parts[partIndex++] = incomingMessage.substring(startIdx, i);
+            startIdx = i + 1;
+          }
+        }
+      }
+      if (startIdx < incomingMessage.length() && partIndex < 9) {
+        parts[partIndex++] = incomingMessage.substring(startIdx);
+      }
+
+      doc["sender_id"] = parts[0].length() > 0 ? parts[0] : "LORA_VICTIM_NODE_01";
+      doc["emergency_type"] = parts[1].length() > 0 ? parts[1] : "Flood";
+      doc["severity"] = parts[2].length() > 0 ? parts[2] : "Critical";
+
+      float lat = parts[3].length() > 0 ? parts[3].toFloat() : 0.0;
+      float lng = parts[4].length() > 0 ? parts[4].toFloat() : 0.0;
+      if (lat != 0.0 && lng != 0.0) {
+        doc["latitude"] = lat;
+        doc["longitude"] = lng;
+        doc["location_source"] = "LORA_GPS";
+      } else {
+        doc["latitude"] = 0;
+        doc["longitude"] = 0;
+        doc["location_source"] = "LORA_UNKNOWN";
+      }
+
+      doc["people_affected"] = parts[5].length() > 0 ? parts[5].toInt() : 1;
+      doc["message"] = parts[6].length() > 0 ? parts[6] : incomingMessage;
+      if (parts[7].length() > 0) {
+        doc["emergency_id"] = parts[7];
+      }
+      doc["hop_count"] = parts[8].length() > 0 ? parts[8].toInt() : 0;
     }
 
     // Attach gateway telemetry
@@ -224,6 +274,5 @@ void loop() {
     digitalWrite(LED_PIN, LOW);
   }
 
-  // Small delay to yield CPU
   delay(10);
 }

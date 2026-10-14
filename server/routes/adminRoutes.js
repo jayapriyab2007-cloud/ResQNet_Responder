@@ -34,7 +34,8 @@ router.get('/emergencies', async (req, res) => {
     }
 
     if (priority && priority !== 'ALL') {
-      query.priority = new RegExp(`^${priority}`, 'i');
+      // Exact enum match — P1, P2, P3, P4
+      query.priority = priority.toUpperCase();
     }
 
     if (status && status !== 'ALL') {

@@ -5,15 +5,21 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const dns = require('dns');
 
-// Configure public DNS resolvers to ensure reliable MongoDB Atlas SRV record resolution on Windows
-try {
-  dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
-} catch (e) {
-  // Fall back to default system DNS if custom resolvers are restricted
-}
-
 // Load environment variables from .env
 dotenv.config();
+
+// Configure scoped DNS resolvers for Node.js process to ensure reliable MongoDB Atlas SRV resolution
+// Windows local DNS resolvers often reject SRV queries (querySrv ECONNREFUSED)
+if (process.env.DISABLE_CUSTOM_DNS !== 'true') {
+  try {
+    const customDns = process.env.DNS_SERVERS
+      ? process.env.DNS_SERVERS.split(',').map(s => s.trim())
+      : ['8.8.8.8', '8.8.4.4', '1.1.1.1'];
+    dns.setServers(customDns);
+  } catch (e) {
+    // Fall back to host system DNS if custom resolvers are restricted
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -42,15 +48,20 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, Capacitor)
     if (!origin) return callback(null, true);
+    // In development, allow all origins for convenience
+    if (process.env.NODE_ENV !== 'production') return callback(null, true);
+    // In production, enforce the whitelist
     if (allowedOrigins.indexOf(origin) !== -1) {
       return callback(null, true);
     }
-    return callback(null, true);
+    console.warn(`[CORS] Blocked origin: ${origin}`);
+    return callback(new Error(`CORS policy: Origin ${origin} is not allowed`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Gateway-Key']
 }));
 
 // Body parser for JSON payloads
@@ -120,11 +131,35 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/lora', loraRoutes);
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.status(200).json({
-    status: 'ok',
+app.get('/api/health', async (req, res) => {
+  const dbState = mongoose.connection.readyState;
+  // readyState: 0=disconnected, 1=connected, 2=connecting, 3=disconnecting
+  const dbStateMap = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting' };
+  const dbStatus = dbStateMap[dbState] || 'unknown';
+  const isHealthy = dbState === 1;
+
+  let dbLatencyMs = null;
+  if (isHealthy) {
+    try {
+      const start = Date.now();
+      await mongoose.connection.db.admin().ping();
+      dbLatencyMs = Date.now() - start;
+    } catch (pingErr) {
+      // ping failed but connection state was 1 — flag as degraded
+    }
+  }
+
+  const statusCode = isHealthy ? 200 : 503;
+  return res.status(statusCode).json({
+    status: isHealthy ? 'ok' : 'degraded',
     service: 'ResQNet API',
-    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+    version: '2.0.0',
+    database: {
+      status: dbStatus,
+      latency_ms: dbLatencyMs
+    },
+    timestamp: new Date().toISOString(),
+    uptime_s: Math.floor(process.uptime())
   });
 });
 
@@ -161,7 +196,17 @@ app.use((err, req, res, next) => {
 // Start Server
 // ============================================================================
 
-server.listen(PORT, () => {
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} is already in use. Retrying in 1s or run:`);
+    console.error(`   Get-NetTCPConnection -LocalPort ${PORT} | Select-Object -ExpandProperty OwningProcess -Unique | Stop-Process -Force`);
+    process.exit(1);
+  } else {
+    console.error('Server error:', err);
+  }
+});
+
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 ResQNet Unified Backend Server running on port ${PORT}`);
   console.log(`🌐 Health check available at: http://localhost:${PORT}/api/health`);
   console.log(`🔗 Allowed CORS origins: ${allowedOrigins.join(', ')}`);

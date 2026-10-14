@@ -4,14 +4,16 @@ const Emergency = require('../models/Emergency');
 const AuditLog = require('../models/AuditLog');
 const Notification = require('../models/Notification');
 const socketService = require('../services/socketService');
+const { requireAuth } = require('../middleware/auth');
 const { getAssignedTeam, calculatePriority, generateEmergencyId } = require('../utils/routing');
 
 /**
- * POST /api/emergencies or /api/emergency
+ * POST /api/emergencies
  * Create a new emergency SOS request.
- * Includes Idempotency Check using emergency_id to protect against duplicate retries during poor connectivity.
+ * Authentication required: victim must be logged in (JWT).
+ * Includes Idempotency Check to protect against duplicate retries during poor connectivity.
  */
-router.post('/', async (req, res) => {
+router.post('/', requireAuth, async (req, res) => {
   try {
     const {
       user_id,
@@ -147,7 +149,7 @@ router.patch('/:emergency_id/cancel', async (req, res) => {
     const emergency = await Emergency.findOneAndUpdate(
       { emergency_id },
       { status: 'Cancelled', updated_at: new Date() },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!emergency) {
       return res.status(404).json({ error: 'Emergency record not found' });

@@ -1,4 +1,4 @@
-/*
+﻿/*
   =============================================================================
   ResQNet - ESP32 LoRa Victim Sender / Beacon Node
   =============================================================================
@@ -7,6 +7,7 @@
     It transmits emergency rescue messages over LoRa radio to the gateway.
     Can be triggered by a physical SOS push button (Pin 4) or automatically sends
     test emergency beacons.
+    Includes bounded burst retransmissions and unique emergency_id for backend deduplication.
   =============================================================================
 */
 
@@ -21,7 +22,7 @@
 #define LORA_RST   14
 #define LORA_DIO0  26
 
-#define LORA_BAND  433E6       // Must match receiver frequency (433E6, 868E6, or 915E6)
+#define LORA_BAND  433E6       // Must match receiver frequency (433E6 India ISM band)
 #define BUTTON_PIN 4           // Connect pushbutton between GPIO 4 and GND
 #define LED_PIN    2
 
@@ -29,28 +30,48 @@
 const char* NODE_ID = "VICTIM_NODE_ALPHA_01";
 
 unsigned long lastBroadcastTime = 0;
-const unsigned long BROADCAST_INTERVAL = 15000; // Auto-beacon every 15s if no button
+const unsigned long BROADCAST_INTERVAL = 30000; // Auto-beacon every 30s in test mode
+uint32_t incidentCounter = 0;
+String currentEmergencyId = "";
 
-void sendEmergencyBroadcast(String customMessage = "") {
+String generateEmergencyId() {
+  incidentCounter++;
+  return String("RQ-LORA-") + String(NODE_ID) + String("-") + String(millis(), HEX);
+}
+
+void sendEmergencyBroadcast(String customMessage = "", bool newIncident = false) {
   digitalWrite(LED_PIN, HIGH);
   Serial.println("[LoRa] Transmitting Victim Emergency Packet...");
 
-  StaticJsonDocument<256> doc;
+  if (newIncident || currentEmergencyId.length() == 0) {
+    currentEmergencyId = generateEmergencyId();
+  }
+
+  StaticJsonDocument<384> doc;
   doc["sender_id"] = NODE_ID;
+  doc["emergency_id"] = currentEmergencyId;
   doc["emergency_type"] = "Flood";
   doc["severity"] = "Critical";
   doc["people_affected"] = 3;
-  doc["message"] = customMessage.length() > 0 ? customMessage : "Water levels rising rapidly on ground floor. 3 people trapped, need boat rescue!";
+  doc["message"] = customMessage.length() > 0 ? customMessage : "Water levels rising rapidly on ground floor. 3 people trapped, need evacuation!";
+  // Set real coordinates or 0,0 if GPS unavailable
   doc["latitude"] = 12.8342;
   doc["longitude"] = 79.7036;
+  doc["location_source"] = "LORA_GPS";
   doc["battery_level"] = 89;
+  doc["hop_count"] = 0;
+  doc["max_hops"] = 3;
 
   String packetStr;
   serializeJson(doc, packetStr);
 
-  LoRa.beginPacket();
-  LoRa.print(packetStr);
-  LoRa.endPacket();
+  // Bounded transmission burst (send 2 times with 200ms spacing to improve reception probability)
+  for (int b = 0; b < 2; b++) {
+    LoRa.beginPacket();
+    LoRa.print(packetStr);
+    LoRa.endPacket();
+    if (b < 1) delay(200);
+  }
 
   Serial.println("[LoRa] Sent Packet: " + packetStr);
   digitalWrite(LED_PIN, LOW);
@@ -86,11 +107,11 @@ void loop() {
   // Check if physical SOS push button pressed (Active LOW with pullup)
   if (digitalRead(BUTTON_PIN) == LOW) {
     Serial.println("[SOS] Physical Emergency Button Pressed!");
-    sendEmergencyBroadcast("URGENT: Emergency Button Activated! Need immediate rescue assistance.");
+    sendEmergencyBroadcast("URGENT: Emergency SOS Button Pressed! Need immediate rescue assistance.", true);
     delay(2000); // Debounce
   }
 
-  // Periodic emergency beacon broadcast
+  // Periodic emergency beacon broadcast in background
   if (millis() - lastBroadcastTime > BROADCAST_INTERVAL) {
     lastBroadcastTime = millis();
     sendEmergencyBroadcast();

@@ -1,12 +1,29 @@
-/**
+﻿/**
  * Normalizer helpers for ResQNet client
  * Maps backend MongoDB Atlas records into uniform frontend format
  */
 
+export function parseCoordinate(val, min, max) {
+  if (val === null || val === undefined || val === '') return null;
+  const num = typeof val === 'number' ? val : Number(val);
+  if (isNaN(num) || !isFinite(num)) return null;
+  if (num < min || num > max) return null;
+  return num;
+}
+
+export function safeFormatTime(date, fallback = 'Recently') {
+  if (!date) return fallback;
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return fallback;
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 export function formatTimeAgo(date) {
   if (!date) return 'Recently';
   const now = new Date();
-  const diffMs = now - new Date(date);
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return 'Recently';
+  const diffMs = now - d;
   const diffSec = Math.floor(diffMs / 1000);
   if (diffSec < 60) return `${diffSec} seconds ago`;
   const diffMin = Math.floor(diffSec / 60);
@@ -35,8 +52,20 @@ export function normalizeEmergency(item) {
   else if (priority.includes('P2')) priorityWeight = 2;
   else if (priority.includes('P3')) priorityWeight = 3;
 
-  const lat = Number(item.latitude !== undefined ? item.latitude : item.lat) || 13.0827;
-  const lng = Number(item.longitude !== undefined ? item.longitude : item.lng) || 80.2707;
+  // Strict coordinate parsing & validation
+  // LoRa incidents without GPS are stored as 0,0 with location_source=LORA_UNKNOWN
+  const rawLat = item.latitude !== undefined ? item.latitude : item.lat;
+  const rawLng = item.longitude !== undefined ? item.longitude : item.lng;
+  const parsedLat = parseCoordinate(rawLat, -90, 90);
+  const parsedLng = parseCoordinate(rawLng, -180, 180);
+
+  const locationSource = (item.location_source || '').toUpperCase();
+  const isLoraUnknown = locationSource === 'LORA_UNKNOWN';
+  const isNullIsland = parsedLat === 0 && parsedLng === 0;
+  const locationAvailable = !isLoraUnknown && !isNullIsland && parsedLat !== null && parsedLng !== null;
+
+  const lat = locationAvailable ? parsedLat : null;
+  const lng = locationAvailable ? parsedLng : null;
   const peopleAffected = item.people_affected !== undefined ? `${item.people_affected} people` : (item.peopleAffected || '1 person');
 
   const assignedResponders = (item.assigned_responders || item.assignedResponders || []).map(r => ({
@@ -54,7 +83,7 @@ export function normalizeEmergency(item) {
     id: n._id ? n._id.toString() : (n.id || Math.random().toString()),
     author: n.author_name || n.author || 'Command Staff',
     role: n.author_role || n.role || 'Responder',
-    timestamp: n.created_at ? new Date(n.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (n.timestamp || 'Just now'),
+    timestamp: safeFormatTime(n.created_at, n.timestamp || 'Just now'),
     message: n.note || n.message || ''
   }));
 
@@ -63,7 +92,7 @@ export function normalizeEmergency(item) {
     sender: m.sender_role || m.sender || 'Victim',
     authorName: m.sender_role === 'VICTIM' ? 'Victim' : (m.sender_role === 'ADMIN' ? 'Command Center' : 'Responder'),
     message: m.message || '',
-    timestamp: m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (m.timestamp || 'Just now'),
+    timestamp: safeFormatTime(m.created_at, m.timestamp || 'Just now'),
     mode: 'INTERNET'
   }));
 
@@ -79,16 +108,19 @@ export function normalizeEmergency(item) {
     message: item.message || item.severity || 'Victim rescue emergency',
     source: item.source || ((item.location_source || '').toUpperCase().includes('LORA') ? 'LORA' : 'WEB'),
     lora_metadata: item.lora_metadata || null,
-    location: item.location || `Sector [${lat.toFixed(4)}, ${lng.toFixed(4)}]`,
+    location: locationAvailable
+      ? (item.location || `Sector [${lat.toFixed(4)}, ${lng.toFixed(4)}]`)
+      : 'Location unavailable (LoRa signal without GPS)',
     lat,
     lng,
     latitude: lat,
     longitude: lng,
+    location_available: locationAvailable,
     location_source: item.location_source || 'GPS',
     peopleAffected,
     people_affected: item.people_affected || 1,
     time: item.created_at ? formatTimeAgo(item.created_at) : (item.time || 'Recent'),
-    createdTime: item.created_at ? new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (item.createdTime || '10:00 AM'),
+    createdTime: safeFormatTime(item.created_at, item.createdTime || '10:00 AM'),
     status: item.status || 'SOS_CREATED',
     statusLabel: (item.status || 'SOS_CREATED').replace(/_/g, ' '),
     assigned_team: item.assigned_team || 'Disaster Response Team',
@@ -98,8 +130,8 @@ export function normalizeEmergency(item) {
     chatMessages,
     escalationRequest: item.escalation_request || item.escalationRequest || null,
     responseTracking: item.responseTracking || {
-      created: item.created_at ? new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '10:00 AM',
-      notified: item.created_at ? new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '10:01 AM',
+      created: safeFormatTime(item.created_at, '10:00 AM'),
+      notified: safeFormatTime(item.created_at, '10:01 AM'),
       assigned: null,
       accepted: null,
       onTheWay: null,
@@ -118,6 +150,22 @@ export function normalizeResponder(item) {
   const rawAvail = (item.availability || 'AVAILABLE').toUpperCase();
   const formattedAvail = rawAvail === 'AVAILABLE' ? 'Available' : (rawAvail === 'BUSY' ? 'Busy' : 'Offline');
 
+  const rawLat = loc.latitude !== undefined ? loc.latitude : item.lat;
+  const rawLng = loc.longitude !== undefined ? loc.longitude : item.lng;
+  const parsedLat = parseCoordinate(rawLat, -90, 90);
+  const parsedLng = parseCoordinate(rawLng, -180, 180);
+  const isNullIsland = parsedLat === 0 && parsedLng === 0;
+  const locationAvailable = !isNullIsland && parsedLat !== null && parsedLng !== null;
+
+  const lat = locationAvailable ? parsedLat : null;
+  const lng = locationAvailable ? parsedLng : null;
+
+  const locationUpdatedAt = loc.updated_at ? new Date(loc.updated_at) : null;
+  const validTimestamp = locationUpdatedAt && !isNaN(locationUpdatedAt.getTime());
+  const locationAgeMs = validTimestamp ? Date.now() - locationUpdatedAt.getTime() : null;
+  // Flag as stale if location is older than 10 minutes
+  const isLocationStale = locationAgeMs !== null && locationAgeMs > 10 * 60 * 1000;
+
   return {
     id,
     responder_id: id,
@@ -130,10 +178,15 @@ export function normalizeResponder(item) {
     rawAvailability: rawAvail,
     status: formattedAvail,
     currentEmergencyId: item.current_emergency_id || null,
-    lat: loc.latitude || item.lat || 13.0827,
-    lng: loc.longitude || item.lng || 80.2707,
-    location: loc.latitude ? `Lat ${loc.latitude.toFixed(4)}, Lng ${loc.longitude.toFixed(4)}` : (item.location || 'Command Base Station'),
-    connection: 'Online'
+    lat: locationAvailable ? lat : null,
+    lng: locationAvailable ? lng : null,
+    location_available: locationAvailable,
+    location_stale: isLocationStale,
+    location_updated_at: validTimestamp ? locationUpdatedAt.toISOString() : null,
+    location: locationAvailable
+      ? `Lat ${lat.toFixed(4)}, Lng ${lng.toFixed(4)}${isLocationStale ? ' (stale)' : ''}`
+      : 'Location unavailable',
+    connection: item.connection_status || 'Online'
   };
 }
 
@@ -150,8 +203,18 @@ export function normalizeHistoryItem(item) {
     else if (rawPriority === 'Low') priority = 'P4';
     else priority = 'P1';
   }
-  const lat = Number(item.latitude !== undefined ? item.latitude : item.lat) || 13.0827;
-  const lng = Number(item.longitude !== undefined ? item.longitude : item.lng) || 80.2707;
+
+  const rawLat = item.latitude !== undefined ? item.latitude : item.lat;
+  const rawLng = item.longitude !== undefined ? item.longitude : item.lng;
+  const parsedLat = parseCoordinate(rawLat, -90, 90);
+  const parsedLng = parseCoordinate(rawLng, -180, 180);
+  const locationSource = (item.location_source || '').toUpperCase();
+  const isLoraUnknown = locationSource === 'LORA_UNKNOWN';
+  const isNullIsland = parsedLat === 0 && parsedLng === 0;
+  const locationAvailable = !isLoraUnknown && !isNullIsland && parsedLat !== null && parsedLng !== null;
+  const lat = locationAvailable ? parsedLat : null;
+  const lng = locationAvailable ? parsedLng : null;
+
   const peopleAffected = item.people_affected !== undefined ? `${item.people_affected} people` : (item.peopleAffected || '1 person');
 
   const assignedResponders = (item.assigned_responders || item.assignedResponders || []).map(r => ({
@@ -164,9 +227,11 @@ export function normalizeHistoryItem(item) {
 
   const createdDate = item.created_at ? new Date(item.created_at) : null;
   const resolvedDate = item.resolved_at ? new Date(item.resolved_at) : (item.updated_at ? new Date(item.updated_at) : null);
+  const validCreated = createdDate && !isNaN(createdDate.getTime());
+  const validResolved = resolvedDate && !isNaN(resolvedDate.getTime());
 
   let responseDuration = 'Resolved';
-  if (createdDate && resolvedDate) {
+  if (validCreated && validResolved) {
     const diffMins = Math.max(1, Math.round((resolvedDate - createdDate) / 60000));
     responseDuration = `${diffMins} mins`;
   }
@@ -176,15 +241,20 @@ export function normalizeHistoryItem(item) {
     emergency_id: id,
     type,
     priority,
-    location: item.location || `Sector [${lat.toFixed(4)}, ${lng.toFixed(4)}]`,
+    location: locationAvailable
+      ? (item.location || `Sector [${lat.toFixed(4)}, ${lng.toFixed(4)}]`)
+      : (item.location || 'Location unavailable (No GPS fix)'),
+    location_available: locationAvailable,
+    lat,
+    lng,
     peopleAffected,
     assignedRespondersCount: assignedResponders.length,
     assignedResponders,
-    createdTime: createdDate ? createdDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Earlier',
-    resolvedTime: resolvedDate ? resolvedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Cleared',
+    createdTime: validCreated ? createdDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Earlier',
+    resolvedTime: validResolved ? resolvedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Cleared',
     responseDuration,
     finalStatus: item.status || 'RESOLVED',
     notesCount: (item.notes || []).length,
-    auditSummary: item.resolution_note || `Incident cleared and resolved by rescue command.`
+    auditSummary: item.resolution_note || 'Incident cleared and resolved by rescue command.'
   };
 }

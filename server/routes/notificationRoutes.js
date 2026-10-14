@@ -4,31 +4,60 @@ const router = express.Router();
 const Notification = require('../models/Notification');
 const { requireAuth } = require('../middleware/auth');
 
-// Optional authentication: if token is present, use user info; else support public query
-router.get('/', async (req, res) => {
+/**
+ * GET /api/notifications
+ * Fetch notifications for the authenticated user.
+ * Requires valid JWT token — returns notifications relevant to this user's role and ID.
+ */
+router.get('/', requireAuth, async (req, res) => {
   try {
-    const { user_id, role } = req.query;
-    let query = {};
+    const userId = req.user.id;
+    const userRole = (req.user.role || 'ALL').toUpperCase();
 
-    if (user_id) {
-      query.$or = [{ user_id: user_id }, { target_role: 'ALL' }];
-    } else if (role) {
-      query.$or = [{ target_role: role.toUpperCase() }, { target_role: 'ALL' }];
+    // Admins see all notifications; responders and victims see their own + role-wide
+    let query;
+    if (userRole === 'ADMIN') {
+      query = {
+        $or: [
+          { target_role: 'ADMIN' },
+          { target_role: 'ALL' }
+        ]
+      };
+    } else {
+      query = {
+        $or: [
+          { user_id: userId },
+          { target_role: userRole },
+          { target_role: 'ALL' }
+        ]
+      };
     }
 
-    const notifications = await Notification.find(query).sort({ created_at: -1 }).limit(50);
-    return res.status(200).json({ success: true, count: notifications.length, notifications });
+    const notifications = await Notification.find(query)
+      .sort({ created_at: -1 })
+      .limit(50);
+
+    return res.status(200).json({
+      success: true,
+      count: notifications.length,
+      notifications
+    });
   } catch (err) {
+    console.error('Error retrieving notifications:', err);
     return res.status(500).json({ success: false, message: 'Error retrieving notifications' });
   }
 });
 
-router.patch('/:id/read', async (req, res) => {
+/**
+ * PATCH /api/notifications/:id/read
+ * Mark a single notification as read. Requires auth.
+ */
+router.patch('/:id/read', requireAuth, async (req, res) => {
   try {
     const notification = await Notification.findByIdAndUpdate(
       req.params.id,
       { read: true },
-      { new: true }
+      { returnDocument: 'after' }
     );
     if (!notification) {
       return res.status(404).json({ success: false, message: 'Notification not found' });
@@ -39,14 +68,29 @@ router.patch('/:id/read', async (req, res) => {
   }
 });
 
-router.patch('/read-all', async (req, res) => {
+/**
+ * PATCH /api/notifications/read-all
+ * Mark all notifications as read for the authenticated user. Requires auth.
+ */
+router.patch('/read-all', requireAuth, async (req, res) => {
   try {
-    const { user_id, role } = req.body;
-    let query = {};
-    if (user_id) query.user_id = user_id;
-    if (role) query.target_role = role.toUpperCase();
+    const userId = req.user.id;
+    const userRole = (req.user.role || 'ALL').toUpperCase();
 
-    await Notification.updateMany(query, { read: true });
+    let query;
+    if (userRole === 'ADMIN') {
+      query = { $or: [{ target_role: 'ADMIN' }, { target_role: 'ALL' }] };
+    } else {
+      query = {
+        $or: [
+          { user_id: userId },
+          { target_role: userRole },
+          { target_role: 'ALL' }
+        ]
+      };
+    }
+
+    await Notification.updateMany({ ...query, read: false }, { read: true });
     return res.status(200).json({ success: true, message: 'All notifications marked as read' });
   } catch (err) {
     return res.status(500).json({ success: false, message: 'Error marking notifications as read' });
