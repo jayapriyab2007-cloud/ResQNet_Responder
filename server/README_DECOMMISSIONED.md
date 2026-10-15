@@ -9,4 +9,4 @@ As part of the ResQNet architectural consolidation, there is **ONE shared Node.j
 - **Victim Client Path**: `D:\Projects\R_Victim\client`
 - **Responder / Admin Client Path**: `D:\Projects\R_Resque\client`
 
-Both client applications connect to `http://localhost:5000`. Running a second server inside `D:\Projects\R_Resque\server` is neither required nor permitted.
+Both client applications connect to `https://resqnet-backend-uzne.onrender.com`. Running a second server inside `D:\Projects\R_Resque\server` is neither required nor permitted.

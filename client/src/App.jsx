@@ -950,7 +950,7 @@ function App() {
     } catch (err) {
       console.error('Authentication attempt failed:', err);
       if (err.isNetworkError || err.message?.includes('fetch') || err.message?.includes('unavailable')) {
-        setAuthError('ResQNet backend is unavailable. Please verify http://localhost:5000 is online and retry.');
+        setAuthError('ResQNet backend is unavailable. Please verify https://resqnet-backend-uzne.onrender.com is online and retry.');
       } else {
         setAuthError(err.message || 'Login failed. Please verify credentials.');
       }

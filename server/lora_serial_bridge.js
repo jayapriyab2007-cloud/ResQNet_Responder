@@ -13,7 +13,7 @@ const { spawn } = require('child_process');
 
 const portName = process.argv[2] || 'COM3';
 const baudRate = parseInt(process.argv[3] || '115200', 10);
-const targetUrl = 'http://localhost:5000/api/lora/message';
+const targetUrl = 'https://resqnet-backend-uzne.onrender.com/api/lora/message';
 
 console.log('==============================================');
 console.log(`📡 ResQNet ESP32 LoRa Serial Bridge`);

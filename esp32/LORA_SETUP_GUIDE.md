@@ -69,7 +69,7 @@ The communication between the physical ESP32 gateway and the backend `/api/lora/
 4. **Gateway Flashing**:
    - Open `esp32/esp32_lora_receiver_gateway.ino`.
    - Update Wi-Fi credentials (`WIFI_SSID`, `WIFI_PASSWORD`).
-   - Set `SERVER_URL` to your backend machine's local IP (e.g. `http://192.168.1.50:5000/api/lora/message`). Check `http://localhost:5000/api/lora/status` for available IP interfaces.
+   - Set `SERVER_URL` to your backend machine's local IP (e.g. `http://192.168.1.50:5000/api/lora/message`). Check `https://resqnet-backend-uzne.onrender.com/api/lora/status` for available IP interfaces.
    - Flash the board and open Serial Monitor at **115200 baud**.
 5. **Transmitter Flashing**:
    - Open `esp32/esp32_lora_victim_sender.ino`.
